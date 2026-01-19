@@ -10,7 +10,6 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
-    AIORateLimiter,
 )
 from pytz import timezone
 
@@ -28,7 +27,7 @@ def escape_markdown(text: str) -> str:
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
-# === ПАРСИНГ САЙТА NASA ===
+# === ПАРСИНГ APOD ===
 def fetch_apod_data():
     response = requests.get(NASA_URL)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -59,7 +58,7 @@ def fetch_apod_data():
 
     return headline, explanation, preview_url, high_res_url, credit
 
-# === ОТПРАВКА ПОСТА В КАНАЛ ===
+# === ПОСТИНГ ===
 async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
     headline, explanation, preview_url, _, credit = fetch_apod_data()
 
@@ -106,7 +105,6 @@ async def today(update, context):
 def main():
     app = ApplicationBuilder()\
         .token(TELEGRAM_TOKEN)\
-        .rate_limiter(AIORateLimiter())\
         .build()
 
     app.add_handler(CommandHandler("start", start))
