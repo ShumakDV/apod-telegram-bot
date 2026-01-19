@@ -1,23 +1,27 @@
 import logging
-import os
 import re
 import datetime
 import requests
 from bs4 import BeautifulSoup
-from telegram import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    AIORateLimiter,
+)
 from pytz import timezone
 
 # === НАСТРОЙКИ ===
 NASA_URL = "https://apod.nasa.gov/apod/astropix.html"
-TELEGRAM_TOKEN = "ВАШ_ТОКЕН"
+TELEGRAM_TOKEN = "8566725896:AAEdatfK7HaBsQ9WSTNCRSYaWIuKumrb8X4"
 CHANNEL_ID = "@AstronomyPictureofDay"
 
-# === НАСТРОЙКА ЛОГГЕРА ===
+# === ЛОГГИРОВАНИЕ ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def escape_markdown(text: str) -> str:
@@ -56,13 +60,15 @@ def fetch_apod_data():
 
     return headline, explanation, preview_url, high_res_url, credit
 
+
+# === ОТПРАВКА ПОСТА ===
 async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
-    headline, explanation, preview_url, high_res_url, credit = fetch_apod_data()
+    headline, explanation, preview_url, _, credit = fetch_apod_data()
 
     today = datetime.datetime.now(timezone("Europe/Vilnius")).strftime("%d %B %Y")
     post_title = f"Astronomy Picture of the Day – {today}"
 
-    # Экранируем текст
+    # Экранируем markdown
     escaped_title = escape_markdown(post_title)
     escaped_headline = escape_markdown(headline)
     escaped_credit = escape_markdown(credit)
@@ -90,28 +96,33 @@ async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2,
         )
 
-# === ОБРАБОТЧИКИ ===
+
+# === КОМАНДЫ ===
 async def start(update, context):
-    await update.message.reply_text("Бот запущен. Команда /today доступна. Автопост в 9:00.")
+    await update.message.reply_text("Bot is running. Use /today to post. Auto posts at 09:00 (Vilnius).")
 
 async def today(update, context):
     await send_apod_post(context)
 
-# === ГЛАВНАЯ ===
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # Команды
+# === ЗАПУСК ===
+def main():
+    app = ApplicationBuilder()\
+        .token(TELEGRAM_TOKEN)\
+        .rate_limiter(AIORateLimiter())\
+        .build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("today", today))
 
-    # Планировщик
-    scheduler = AsyncIOScheduler(timezone="Europe/Vilnius")
-    scheduler.add_job(send_apod_post, trigger="cron", hour=9, minute=0, args=[app])
-    scheduler.start()
+    app.job_queue.run_daily(
+        send_apod_post,
+        time=datetime.time(hour=9, minute=0, tzinfo=timezone("Europe/Vilnius"))
+    )
 
-    logger.info("Бот запущен. Команда /today доступна. Автопост в 9:00.")
+    logger.info("Бот запущен. Автопост в 09:00 по Вильнюсу.")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
