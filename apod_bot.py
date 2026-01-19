@@ -2,9 +2,8 @@ import os
 import logging
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from telegram import (
-    Bot,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -14,49 +13,62 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import timezone as tz
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ================== НАСТРОЙКИ ==================
 
-# Получаем переменные окружения
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
-# Парсим данные с APOD
+APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ================== ПАРСИНГ APOD ==================
+
 def get_apod_data():
-    url = "https://apod.nasa.gov/apod/astropix.html"
-    response = requests.get(url)
+    response = requests.get(APOD_URL, timeout=20)
+    response.raise_for_status()
+
     soup = BeautifulSoup(response.text, "html.parser")
 
     # Заголовок
-    title = soup.find_all("b")[0].text.strip()
+    title = soup.find_all("b")[0].get_text(strip=True)
 
-    # Автор (Image Credit)
+    # Image Credit (реальный автор)
     credit = "NASA"
-    for tag in soup.find_all("center"):
-        if "Image Credit" in tag.text:
-            credit = tag.text.split("Image Credit:")[-1].strip()
+    for center in soup.find_all("center"):
+        if "Image Credit" in center.text:
+            credit = center.text.split("Image Credit:")[-1].strip()
             break
 
-    # Описание
-    explanation_block = soup.find("b", string="Explanation:")
-    explanation_lines = []
-    if explanation_block:
-        for sibling in explanation_block.next_siblings:
-            if sibling.name == "b":
+    # Explanation
+    explanation = ""
+    expl_tag = soup.find("b", string="Explanation:")
+    if expl_tag:
+        parts = []
+        for el in expl_tag.next_siblings:
+            if getattr(el, "name", None) == "b":
                 break
-            if isinstance(sibling, str):
-                explanation_lines.append(sibling.strip())
-    explanation = "\n".join(line for line in explanation_lines if line)
+            if isinstance(el, str):
+                text = el.strip()
+                if text:
+                    parts.append(text)
+        explanation = " ".join(parts)
 
-    # Картинка
-    image_tag = soup.find("a", href=True)
-    image_url = f"https://apod.nasa.gov/apod/{image_tag['href']}" if image_tag else None
+    # Оригинальная картинка
+    image_url = None
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.lower().endswith((".jpg", ".jpeg", ".png")):
+            image_url = "https://apod.nasa.gov/apod/" + href
+            break
 
-    # Ссылка на пост
+    if not image_url:
+        raise RuntimeError("Не удалось найти изображение APOD")
+
+    # Ссылка на сегодняшний пост
     today = datetime.now(timezone.utc)
     page_url = f"https://apod.nasa.gov/apod/ap{today.strftime('%y%m%d')}.html"
 
@@ -65,70 +77,72 @@ def get_apod_data():
         "credit": credit,
         "explanation": explanation,
         "image_url": image_url,
-        "page_url": page_url
+        "page_url": page_url,
     }
 
-# Текст поста
-def build_post_text(data):
+# ================== ТЕКСТ ПОСТА ==================
+
+def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
-    return (
+    caption = (
         f"*Astronomy Picture of the Day – {now.strftime('%d %B %Y')}*\n\n"
         f"*{data['title']}*\n"
         f"_Image Credit: {data['credit']}_\n\n"
         f"{data['explanation']}"
     )
 
-# Команда /today
+    # лимит Telegram
+    if len(caption) > 1024:
+        caption = caption[:1020] + "..."
+
+    return caption
+
+# ================== ОТПРАВКА ==================
+
+async def send_apod(chat_id: str, bot):
+    data = get_apod_data()
+    caption = build_caption(data)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]
+    ])
+
+    await bot.send_photo(
+        chat_id=chat_id,
+        photo=data["image_url"],
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+# ================== /today ==================
+
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = get_apod_data()
-    text = build_post_text(data)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]
-    ])
+    await send_apod(update.effective_chat.id, context.bot)
 
-    try:
-        await context.bot.send_photo(
-            chat_id=update.effective_chat.id,
-            photo=data["image_url"],
-            caption=text,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при /today: {e}")
+# ================== АВТОПОСТ ==================
 
-# Пост в канал
-async def send_apod_post(context: ContextTypes.DEFAULT_TYPE = None):
-    data = get_apod_data()
-    text = build_post_text(data)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]
-    ])
+async def daily_post(context: ContextTypes.DEFAULT_TYPE):
+    await send_apod(CHANNEL_ID, context.bot)
+    logger.info("✅ Автопост отправлен в канал")
 
-    try:
-        await context.bot.send_photo(
-            chat_id=CHANNEL_ID,
-            photo=data["image_url"],
-            caption=text,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-        logger.info("✅ Пост отправлен в канал.")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при отправке в канал: {e}")
+# ================== ЗАПУСК ==================
 
-# Запуск приложения
-if __name__ == "__main__":
+def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Команда /today
     app.add_handler(CommandHandler("today", today))
 
-    # Планировщик задачи
-    scheduler = AsyncIOScheduler(timezone="Europe/Vilnius")
-    scheduler.add_job(send_apod_post, trigger="cron", hour=9, minute=0)
-    scheduler.start()
-    logger.info("🕓 Планировщик запущен")
+    # Планирование автопоста (09:00 Вильнюс)
+    vilnius_tz = tz("Europe/Vilnius")
+    app.job_queue.run_daily(
+        daily_post,
+        time=time(hour=9, minute=0, tzinfo=vilnius_tz)
+    )
 
-    # Запуск бота
-    logger.info("✅ Бот запущен. Ожидает команды или автоматическую отправку.")
+    logger.info("✅ Бот запущен. /today — в личку, автопост — в канал.")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
