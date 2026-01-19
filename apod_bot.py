@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ================== ПАРСИНГ APOD ==================
 
 def get_apod_data():
-    response = requests.get(APOD_URL, timeout=20)
+    response = requests.get(APOD_URL, timeout=15)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -36,26 +36,35 @@ def get_apod_data():
     # Заголовок
     title = soup.find_all("b")[0].get_text(strip=True)
 
-    # Image Credit (реальный автор)
+    # Автор (Image Credit)
     credit = "NASA"
-    for center in soup.find_all("center"):
-        if "Image Credit" in center.text:
-            credit = center.text.split("Image Credit:")[-1].strip()
+    for tag in soup.find_all("center"):
+        if "Image Credit" in tag.text:
+            credit = tag.text.split("Image Credit:")[-1].strip()
             break
 
-    # Explanation
-    explanation = ""
+    # Explanation (получаем весь блок)
+    explanation_text = ""
     expl_tag = soup.find("b", string="Explanation:")
     if expl_tag:
-        parts = []
-        for el in expl_tag.next_siblings:
-            if getattr(el, "name", None) == "b":
+        # собираем текст всех следующих строк до следующего <b>
+        lines = []
+        for sib in expl_tag.next_siblings:
+            if getattr(sib, "name", None) == "b":
                 break
-            if isinstance(el, str):
-                text = el.strip()
+            if isinstance(sib, str):
+                text = sib.strip()
                 if text:
-                    parts.append(text)
-        explanation = " ".join(parts)
+                    lines.append(text)
+        explanation_text = " ".join(lines)
+
+    # делим на предложения
+    sentences = explanation_text.split(". ")
+    # берём первые 5 предложений
+    first_sentences = ". ".join(sentences[:5]).strip()
+    # если они не заканчиваются на точку — добавим
+    if first_sentences and not first_sentences.endswith("."):
+        first_sentences += "."
 
     # Оригинальная картинка
     image_url = None
@@ -65,9 +74,6 @@ def get_apod_data():
             image_url = "https://apod.nasa.gov/apod/" + href
             break
 
-    if not image_url:
-        raise RuntimeError("Не удалось найти изображение APOD")
-
     # Ссылка на сегодняшний пост
     today = datetime.now(timezone.utc)
     page_url = f"https://apod.nasa.gov/apod/ap{today.strftime('%y%m%d')}.html"
@@ -75,12 +81,12 @@ def get_apod_data():
     return {
         "title": title,
         "credit": credit,
-        "explanation": explanation,
         "image_url": image_url,
         "page_url": page_url,
+        "short_explanation": first_sentences
     }
 
-# ================== ТЕКСТ ПОСТА ==================
+# ================== СБОРКА ПОДПИСИ ==================
 
 def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
@@ -88,10 +94,10 @@ def build_caption(data):
         f"*Astronomy Picture of the Day – {now.strftime('%d %B %Y')}*\n\n"
         f"*{data['title']}*\n"
         f"_Image Credit: {data['credit']}_\n\n"
-        f"{data['explanation']}"
+        f"{data['short_explanation']}"
     )
 
-    # лимит Telegram
+    # Telegram лимит caption ≤ 1024 символа
     if len(caption) > 1024:
         caption = caption[:1020] + "..."
 
@@ -134,7 +140,7 @@ def main():
     # Команда /today
     app.add_handler(CommandHandler("today", today))
 
-    # Планирование автопоста (09:00 Вильнюс)
+    # Планирование автопоста через JobQueue
     vilnius_tz = tz("Europe/Vilnius")
     app.job_queue.run_daily(
         daily_post,
