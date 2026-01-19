@@ -1,8 +1,7 @@
 import os
 import logging
 import re
-from html import escape
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone, time as dtime
 
 import requests
 from bs4 import BeautifulSoup
@@ -23,6 +22,11 @@ logger = logging.getLogger(__name__)
 # ================== ПАРСИНГ APOD ==================
 
 
+def _clean_text(s: str) -> str:
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return s
+
+
 def get_apod_data():
     response = requests.get(APOD_URL, timeout=15)
     response.raise_for_status()
@@ -30,72 +34,71 @@ def get_apod_data():
     soup = BeautifulSoup(response.text, "html.parser")
 
     # ---------- Заголовок ----------
-    # На APOD заголовок обычно в первом <b>, но иногда страница меняется.
     title = "Astronomy Picture of the Day"
     b_tags = soup.find_all("b")
     if b_tags:
-        title = b_tags[0].get_text(strip=True) or title
+        t = b_tags[0].get_text(strip=True)
+        if t:
+            title = t
 
     # ---------- Image Credit ----------
     credit = "NASA"
     for center in soup.find_all("center"):
         text = center.get_text(" ", strip=True)
         if "Image Credit" in text:
-            # Иногда бывает "Image Credit & Copyright:" и т.п.
+            # бывает "Image Credit & Copyright:"
             credit = text.split("Image Credit")[-1]
-            credit = credit.replace(":", "").replace("& Copyright", "").strip()
+            credit = credit.replace(":", "").strip()
+            credit = _clean_text(credit)
             if credit:
                 break
             credit = "NASA"
 
-    # ---------- Explanation ----------
+    # ---------- Explanation (берём 3-4 предложения) ----------
     explanation_text = ""
     expl_b = soup.find("b", string=re.compile(r"^\s*Explanation:\s*$"))
     if expl_b:
         parts = []
         for sib in expl_b.next_siblings:
-            # Останавливаемся, когда пошёл следующий жирный заголовок
+            # стоп, когда пошёл следующий жирный заголовок
             if getattr(sib, "name", None) == "b":
                 break
-            # Текстовые узлы
+
             if isinstance(sib, str):
                 cleaned = sib.strip()
                 if cleaned:
                     parts.append(cleaned)
             else:
-                # Иногда рядом бывают теги <p>, <br> и т.п.
+                # иногда это <p>, <br> и т.п.
                 txt = sib.get_text(" ", strip=True) if hasattr(sib, "get_text") else ""
                 if txt:
                     parts.append(txt)
 
-        explanation_text = " ".join(parts)
+        explanation_text = _clean_text(" ".join(parts))
 
-    explanation_text = re.sub(r"\s+", " ", explanation_text).strip()
-
-    # ---------- Берём первые 2–3 предложения ----------
+    # 3–4 предложения
     short_explanation = ""
     if explanation_text:
         sentences = re.split(r"(?<=\.)\s+", explanation_text)
-        short_explanation = " ".join(sentences[:3]).strip()
+        short_explanation = " ".join(sentences[:4]).strip()
         if short_explanation and not short_explanation.endswith("."):
             short_explanation += "."
 
     # ---------- Оригинальная картинка ----------
     image_url = None
 
-    # Сначала пробуем найти <img src="image/...jpg"> — часто самый надёжный путь
+    # часто самый надёжный путь — <img src="image/...jpg">
     img = soup.find("img")
     if img and img.get("src"):
         src = img["src"].strip()
         if src.lower().endswith((".jpg", ".jpeg", ".png")):
             image_url = "https://apod.nasa.gov/apod/" + src.lstrip("./")
 
-    # Если не нашли — ищем ссылку на jpg/png в <a href=...>
+    # запасной вариант — ссылка <a href="image/...jpg">
     if not image_url:
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
-            low = href.lower()
-            if low.endswith((".jpg", ".jpeg", ".png")):
+            if href.lower().endswith((".jpg", ".jpeg", ".png")):
                 image_url = "https://apod.nasa.gov/apod/" + href.lstrip("./")
                 break
 
@@ -112,38 +115,29 @@ def get_apod_data():
     }
 
 
-# ================== СБОРКА ТЕКСТА ==================
+# ================== СБОРКА ПОДПИСИ (ОДНО СООБЩЕНИЕ) ==================
 
 
-def build_caption_and_text(data):
+def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
-    date_str = now.strftime("%d %B %Y")
 
-    # ВАЖНО:
-    # - caption у фото в Telegram ограничен 1024 символами
-    # - полный текст лучше отправлять отдельным сообщением (лимит 4096)
+    # Markdown часто ломается на символах _, (), [], поэтому используем HTML-режим
+    title = data.get("title") or "Astronomy Picture of the Day"
+    credit = data.get("credit") or "NASA"
+    expl = data.get("short_explanation") or "Описание сегодня недоступно на странице APOD."
+
     caption = (
-        f"<b>Astronomy Picture of the Day — {escape(date_str)}</b>\n\n"
-        f"<b>{escape(data['title'])}</b>\n"
-        f"<i>Image Credit: {escape(data['credit'])}</i>"
+        f"<b>Astronomy Picture of the Day – {now.strftime('%d %B %Y')}</b>\n\n"
+        f"<b>{title}</b>\n"
+        f"<i>Image Credit: {credit}</i>\n\n"
+        f"{expl}"
     )
+
+    # лимит Telegram для caption у фото
     if len(caption) > 1024:
         caption = caption[:1020] + "..."
 
-    # Полный текст поста (можешь заменить short_explanation на explanation_text,
-    # если решишь парсить полный текст)
-    explanation = data.get("short_explanation") or "Описание сегодня недоступно на странице APOD."
-
-    post_text = (
-        f"<b>{escape(data['title'])}</b>\n"
-        f"<i>Image Credit: {escape(data['credit'])}</i>\n\n"
-        f"{escape(explanation)}\n\n"
-        f"🌐 {escape(data['page_url'])}"
-    )
-    if len(post_text) > 4096:
-        post_text = post_text[:4090] + "..."
-
-    return caption, post_text
+    return caption
 
 
 # ================== ОТПРАВКА ==================
@@ -151,38 +145,29 @@ def build_caption_and_text(data):
 
 async def send_apod(chat_id: str, bot):
     data = get_apod_data()
-    caption, post_text = build_caption_and_text(data)
+    caption = build_caption(data)
 
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]]
     )
 
-    # Если сегодня не картинка (бывает видео) — просто отправим текст + ссылку
+    # Если сегодня не картинка (бывает видео), фото не отправим — иначе будет ошибка.
+    # Но ты просил ОДНО сообщение с фото+текстом — значит, в такой день отправим просто сообщение со ссылкой.
     if not data["image_url"]:
         await bot.send_message(
             chat_id=chat_id,
-            text=post_text,
-            parse_mode="HTML",
-            disable_web_page_preview=False,
+            text=f"Сегодня на APOD не картинка 😅\n{data['page_url']}",
             reply_markup=keyboard,
+            disable_web_page_preview=False,
         )
         return
 
-    # 1) Фото с короткой подписью
     await bot.send_photo(
         chat_id=chat_id,
         photo=data["image_url"],
         caption=caption,
         parse_mode="HTML",
         reply_markup=keyboard,
-    )
-
-    # 2) Отдельным сообщением — текст (чтобы был “как пост”)
-    await bot.send_message(
-        chat_id=chat_id,
-        text=post_text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
     )
 
 
@@ -213,14 +198,13 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # /today — в личку
     app.add_handler(CommandHandler("today", today))
 
     # автопост в 09:00 Вильнюс
     vilnius_tz = tz("Europe/Vilnius")
     app.job_queue.run_daily(
         daily_post,
-        time=time(hour=9, minute=0, tzinfo=vilnius_tz),
+        time=dtime(hour=9, minute=0, tzinfo=vilnius_tz),
         name="daily_post",
     )
 
