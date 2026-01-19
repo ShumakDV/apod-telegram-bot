@@ -13,7 +13,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔐 Переменные окружения (Railway или локально)
+# 🔐 Переменные окружения
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
@@ -60,8 +60,8 @@ def is_valid_image(url):
         logger.error(f"Ошибка при проверке изображения: {e}")
         return False
 
-# 📤 Отправляем пост в канал
-async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
+# 📤 Отправка поста (в канал или ЛС)
+async def send_apod_post(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     try:
         apod = fetch_apod_data()
 
@@ -84,30 +84,32 @@ async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🌐 View on NASA Website", url=APOD_URL)]
         ])
 
+        target_chat = chat_id or CHANNEL_ID
+
         await context.bot.send_photo(
-            chat_id=CHANNEL_ID,
+            chat_id=target_chat,
             photo=apod["image_url"],
             caption=caption,
             parse_mode="HTML",
             reply_markup=buttons
         )
-        logger.info("Пост успешно отправлен.")
+        logger.info(f"Пост отправлен в {target_chat}")
 
     except Exception as e:
         logger.error(f"Ошибка при отправке поста: {e}")
 
-# 🔘 Команда /today
+# 🔘 Команда /today отправляет пост в ЛС
 async def today(update, context):
-    await send_apod_post(context)
+    await send_apod_post(context, chat_id=update.effective_chat.id)
 
-# 📅 Планировщик (через post_init)
+# 📅 Планировщик
 async def start_scheduler(app):
     scheduler = AsyncIOScheduler(timezone=timezone("Europe/Vilnius"))
     scheduler.add_job(send_apod_post, "cron", hour=9, minute=0, args=[app.bot])
     scheduler.start()
     logger.info("Планировщик запущен")
 
-# 🚀 Старт бота
+# 🚀 Запуск бота
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(start_scheduler).build()
     app.add_handler(CommandHandler("today", today))
