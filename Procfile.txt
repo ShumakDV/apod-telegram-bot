@@ -1,0 +1,1 @@
+worker: python apod_bot.py
