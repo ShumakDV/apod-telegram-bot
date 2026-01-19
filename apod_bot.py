@@ -31,28 +31,27 @@ def get_apod_data():
 
     explanation = soup.find_all("p")[2].get_text()
 
-    # Попытка получить ссылку из <a>
-    media_tag = soup.find("a")
+    # Ищем ссылку на оригинал изображения
+    links = soup.find_all("a")
     image_url = None
 
-    if media_tag and media_tag["href"].endswith((".jpg", ".png")):
-        image_url = "https://apod.nasa.gov/apod/" + media_tag["href"]
-    else:
-        # Попытка найти <img src=...>
-        img_tag = soup.find("img")
-        if img_tag and img_tag["src"].endswith((".jpg", ".png")):
-            image_url = "https://apod.nasa.gov/apod/" + img_tag["src"]
+    for link in links:
+        href = link.get("href", "")
+        if href.lower().endswith((".jpg", ".jpeg", ".png", ".tiff")):
+            image_url = "https://apod.nasa.gov/apod/" + href
+            break
 
     if image_url:
         image_data = requests.get(image_url).content
-        return image_data, explanation
+        filename = image_url.split("/")[-1]
+        return image_data, explanation, filename
     else:
-        return None, explanation
+        return None, explanation, None
 
 # ========== КОМАНДА /today ==========
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📡 Получаю Astronomy Picture of the Day...")
-    image, text = get_apod_data()
+    image, text, filename = get_apod_data()
 
     if not image:
         await update.message.reply_text("Сегодня изображение недоступно.")
@@ -64,24 +63,25 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
     caption += text[:1024 - len(caption)]
 
-    # 1. Отправляем фото с подписью
+    # 1. Отправляем фото с описанием
     await context.bot.send_photo(
         chat_id=update.effective_chat.id,
         photo=image,
         caption=caption
     )
 
-    # 2. Отправляем оригинал без сжатия
+    # 2. Отправляем оригинал как файл
+    filename = filename or f"apod_{today_str.replace(' ', '_')}.jpg"
     await context.bot.send_document(
         chat_id=update.effective_chat.id,
         document=image,
-        filename=f"apod_{today_str.replace(' ', '_')}.jpg",
+        filename=filename,
         caption="📎 Изображение в оригинальном качестве"
     )
 
 # ========== АВТОПОСТ В КАНАЛ ==========
 def scheduled_post(application):
-    image, text = get_apod_data()
+    image, text, filename = get_apod_data()
     if not image:
         return
 
@@ -91,18 +91,19 @@ def scheduled_post(application):
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
     caption += text[:1024 - len(caption)]
 
-    # 1. Отправляем как фото с описанием
+    # 1. Отправляем как фото
     application.bot.send_photo(
         chat_id=CHANNEL_ID,
         photo=image,
         caption=caption
     )
 
-    # 2. Отправляем то же изображение как файл
+    # 2. Отправляем оригинальный файл
+    filename = filename or f"apod_{today_str.replace(' ', '_')}.jpg"
     application.bot.send_document(
         chat_id=CHANNEL_ID,
         document=image,
-        filename=f"apod_{today_str.replace(' ', '_')}.jpg",
+        filename=filename,
         caption="📎 Изображение в оригинальном качестве"
     )
 
