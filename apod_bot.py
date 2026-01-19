@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from pytz import timezone as tz
+import re
 
 # ================== НАСТРОЙКИ ==================
 
@@ -33,48 +34,49 @@ def get_apod_data():
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # Заголовок
+    # ---------- Заголовок ----------
     title = soup.find_all("b")[0].get_text(strip=True)
 
-    # Автор (Image Credit)
+    # ---------- Image Credit ----------
     credit = "NASA"
-    for tag in soup.find_all("center"):
-        if "Image Credit" in tag.text:
-            credit = tag.text.split("Image Credit:")[-1].strip()
+    for center in soup.find_all("center"):
+        if "Image Credit" in center.get_text():
+            credit = center.get_text().split("Image Credit:")[-1].strip()
             break
 
-    # Explanation (получаем весь блок)
+    # ---------- Explanation ----------
     explanation_text = ""
-    expl_tag = soup.find("b", string="Explanation:")
-    if expl_tag:
-        # собираем текст всех следующих строк до следующего <b>
-        lines = []
-        for sib in expl_tag.next_siblings:
+    expl_b = soup.find("b", string="Explanation:")
+    if expl_b:
+        parts = []
+        for sib in expl_b.next_siblings:
             if getattr(sib, "name", None) == "b":
                 break
             if isinstance(sib, str):
-                text = sib.strip()
-                if text:
-                    lines.append(text)
-        explanation_text = " ".join(lines)
+                cleaned = sib.strip()
+                if cleaned:
+                    parts.append(cleaned)
+        explanation_text = " ".join(parts)
 
-    # делим на предложения
-    sentences = explanation_text.split(". ")
-    # берём первые 5 предложений
-    first_sentences = ". ".join(sentences[:5]).strip()
-    # если они не заканчиваются на точку — добавим
-    if first_sentences and not first_sentences.endswith("."):
-        first_sentences += "."
+    # чистим пробелы и переносы
+    explanation_text = re.sub(r"\s+", " ", explanation_text)
 
-    # Оригинальная картинка
+    # ---------- Берём первые 2–3 предложения ----------
+    sentences = re.split(r"(?<=\.)\s+", explanation_text)
+    short_explanation = " ".join(sentences[:3]).strip()
+
+    if short_explanation and not short_explanation.endswith("."):
+        short_explanation += "."
+
+    # ---------- Оригинальная картинка ----------
     image_url = None
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.lower().endswith((".jpg", ".jpeg", ".png")):
-            image_url = "https://apod.nasa.gov/apod/" + href
+        href = a["href"].lower()
+        if href.endswith((".jpg", ".jpeg", ".png")):
+            image_url = "https://apod.nasa.gov/apod/" + a["href"]
             break
 
-    # Ссылка на сегодняшний пост
+    # ---------- Ссылка на страницу ----------
     today = datetime.now(timezone.utc)
     page_url = f"https://apod.nasa.gov/apod/ap{today.strftime('%y%m%d')}.html"
 
@@ -83,13 +85,14 @@ def get_apod_data():
         "credit": credit,
         "image_url": image_url,
         "page_url": page_url,
-        "short_explanation": first_sentences
+        "short_explanation": short_explanation,
     }
 
 # ================== СБОРКА ПОДПИСИ ==================
 
 def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
+
     caption = (
         f"*Astronomy Picture of the Day – {now.strftime('%d %B %Y')}*\n\n"
         f"*{data['title']}*\n"
@@ -97,7 +100,7 @@ def build_caption(data):
         f"{data['short_explanation']}"
     )
 
-    # Telegram лимит caption ≤ 1024 символа
+    # лимит Telegram
     if len(caption) > 1024:
         caption = caption[:1020] + "..."
 
@@ -137,10 +140,10 @@ async def daily_post(context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Команда /today
+    # /today — в личку
     app.add_handler(CommandHandler("today", today))
 
-    # Планирование автопоста через JobQueue
+    # автопост в 09:00 Вильнюс
     vilnius_tz = tz("Europe/Vilnius")
     app.job_queue.run_daily(
         daily_post,
