@@ -1,118 +1,127 @@
 import os
-import logging
 import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackContext
+from telegram import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from pytz import timezone
+import logging
 
-# Настройка логирования
+# Включаем логгирование для отладки
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Получаем токен из переменной окружения (как настроено в Railway)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # ID канала, если потребуется для автопоста
+# Загружаем переменные окружения
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 
-# Максимально допустимая длина подписи в Telegram
-MAX_CAPTION_LENGTH = 1024
+# URL страницы APOD
+APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
 
-# Получение данных APOD с сайта NASA
-def get_apod_data():
-    url = "https://apod.nasa.gov/apod/astropix.html"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, "html.parser")
 
+# 📥 Получаем данные с сайта APOD
+def fetch_apod_data():
+    response = requests.get(APOD_URL)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # Заголовок картинки
     title_tag = soup.find_all("b")[0]
-    title = title_tag.text.strip()
+    title = title_tag.get_text(strip=True) if title_tag else "Astronomy Picture of the Day"
 
-    credit_line = soup.find_all("b")[1].next_sibling.strip() if len(soup.find_all("b")) > 1 else "Unknown"
-    image_tag = soup.find("img")
-    image_url = "https://apod.nasa.gov/apod/" + image_tag["src"] if image_tag else None
+    # Автор изображения
+    credit_text = ""
+    credit_tag = soup.find("b", string="Image Credit")
+    if credit_tag and credit_tag.next_sibling:
+        credit_text = credit_tag.next_sibling.strip(": ").strip()
 
-    explanation_header = soup.find("b", string="Explanation:")
+    # Пояснение (всё, что после тега <b>Explanation:</b>)
+    explanation_start = soup.find("b", string="Explanation:")
     explanation = ""
-    if explanation_header:
-        for elem in explanation_header.next_siblings:
-            if elem.name == "b":
+    if explanation_start:
+        for tag in explanation_start.parent.find_next_siblings("p"):
+            explanation += tag.get_text(" ", strip=True) + "\n\n"
+            if len(explanation) > 1500:
                 break
-            if isinstance(elem, str):
-                explanation += elem.strip() + "\n"
 
-    today = datetime.now().strftime("%d %B %Y")
-    nasa_page_url = "https://apod.nasa.gov/apod/astropix.html"
+    # Извлекаем URL изображения
+    image_tag = soup.find("a", href=True)
+    image_url = ""
+    if image_tag and image_tag["href"].lower().endswith((".jpg", ".png")):
+        image_url = f"https://apod.nasa.gov/apod/{image_tag['href']}"
 
     return {
         "title": title,
-        "credit": credit_line,
-        "image_url": image_url,
+        "credit": credit_text,
         "explanation": explanation.strip(),
-        "today": today,
-        "nasa_url": nasa_page_url,
+        "image_url": image_url,
     }
 
-# Отправка поста (для кнопки и автопостинга)
-async def send_apod_post(context: CallbackContext):
-    apod = get_apod_data()
 
-    caption_header = f"<b>{apod['title']}</b>\n<i>Image Credit: {apod['credit']}</i>\n\n"
-    explanation = apod['explanation']
-    full_caption = caption_header + explanation
+# 📤 Отправляем пост в канал
+async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        apod = fetch_apod_data()
+        date_str = datetime.now().strftime("%d %B %Y")
 
-    keyboard = [
-        [InlineKeyboardButton("🌐 View on NASA Website", url=apod['nasa_url'])]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        # 📝 Формируем подпись к изображению
+        caption = (
+            f"<b>Astronomy Picture of the Day – {date_str}</b>\n\n"
+            f"<b>{apod['title']}</b>\n"
+            f"<i>Image Credit: {apod['credit']}</i>\n\n"
+            f"{apod['explanation']}"
+        )
 
-    if len(full_caption) <= MAX_CAPTION_LENGTH:
-        # Всё помещается — отправляем в одном сообщении
+        # Ограничиваем длину подписи до 1024 символов
+        if len(caption) > 1024:
+            caption = caption[:1020] + "..."
+
+        # Кнопка "Открыть на сайте NASA"
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌐 View on NASA Website", url=APOD_URL)]
+        ])
+
+        # Отправка изображения с подписью и кнопкой
         await context.bot.send_photo(
-            chat_id=context.job.chat_id if hasattr(context, 'job') else context._chat_id,
-            photo=apod['image_url'],
-            caption=full_caption,
-            parse_mode='HTML',
-            reply_markup=reply_markup
-        )
-    else:
-        # Подпись слишком длинная — делим на 2 части
-        await context.bot.send_photo(
-            chat_id=context.job.chat_id if hasattr(context, 'job') else context._chat_id,
-            photo=apod['image_url'],
-            caption=caption_header,
-            parse_mode='HTML',
-            reply_markup=reply_markup
-        )
-        await context.bot.send_message(
-            chat_id=context.job.chat_id if hasattr(context, 'job') else context._chat_id,
-            text=explanation,
-            parse_mode='HTML'
+            chat_id=CHANNEL_ID,
+            photo=apod["image_url"],
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=buttons
         )
 
-# Команда /today — получить пост за сегодня
+        logger.info("Пост успешно опубликован.")
+
+    except Exception as e:
+        logger.error(f"Ошибка при отправке поста: {e}")
+
+
+# 🔘 Обработчик команды /today
 async def today(update, context):
-    context._chat_id = update.effective_chat.id
     await send_apod_post(context)
 
-# Основная функция запуска бота
+
+# 🚀 Главная функция запуска бота
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Добавляем команду /today
     app.add_handler(CommandHandler("today", today))
 
-    # Планируем автопост в 9:00 по Вильнюсу
-    scheduler = AsyncIOScheduler(timezone="Europe/Vilnius")
-    scheduler.add_job(
-        send_apod_post,
-        trigger=CronTrigger(hour=9, minute=0),
-        kwargs={"context": CallbackContext(app).bot}
-    )
+    # Планировщик для ежедневного поста в 9:00 по Вильнюсу
+    scheduler = AsyncIOScheduler(timezone=timezone("Europe/Vilnius"))
+    scheduler.add_job(send_apod_post, trigger="cron", hour=9, minute=0, args=[app.bot])
     scheduler.start()
 
     logger.info("Бот запущен. Автопост в 09:00 (Europe/Vilnius).")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
