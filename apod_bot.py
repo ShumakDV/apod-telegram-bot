@@ -1,3 +1,4 @@
+
 import os
 import requests
 from datetime import datetime
@@ -12,12 +13,12 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔐 Переменные из Railway
+# 🔐 Переменные окружения (Railway или локально)
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
 
-# 📤 Получаем данные с NASA
+# 📥 Получаем данные APOD
 def fetch_apod_data():
     response = requests.get(APOD_URL)
     response.raise_for_status()
@@ -35,8 +36,12 @@ def fetch_apod_data():
             if len(explanation) > 1500:
                 break
 
-    image_tag = soup.find("a", href=True)
-    image_url = f"https://apod.nasa.gov/apod/{image_tag['href']}" if image_tag else ""
+    image_url = ""
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag['href']
+        if href.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+            image_url = f"https://apod.nasa.gov/apod/{href}"
+            break
 
     return {
         "title": title,
@@ -45,10 +50,25 @@ def fetch_apod_data():
         "image_url": image_url
     }
 
-# 📤 Отправляем пост
+# 🧠 Проверка доступности картинки
+def is_valid_image(url):
+    try:
+        head = requests.head(url, timeout=10)
+        content_type = head.headers.get("Content-Type", "")
+        return content_type.startswith("image")
+    except Exception as e:
+        logger.error(f"Ошибка при проверке изображения: {e}")
+        return False
+
+# 📤 Отправляем пост в канал
 async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
     try:
         apod = fetch_apod_data()
+
+        if not apod["image_url"] or not is_valid_image(apod["image_url"]):
+            logger.error("Недопустимый формат изображения или ссылка недоступна.")
+            return
+
         date_str = datetime.now().strftime("%d %B %Y")
         caption = (
             f"<b>Astronomy Picture of the Day – {date_str}</b>\n\n"
@@ -71,24 +91,23 @@ async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=buttons
         )
-
-        logger.info("Пост отправлен")
+        logger.info("Пост успешно отправлен.")
 
     except Exception as e:
         logger.error(f"Ошибка при отправке поста: {e}")
 
-# 🔘 Обработчик команды /today
+# 🔘 Команда /today
 async def today(update, context):
     await send_apod_post(context)
 
-# 🧠 post_init: запускаем планировщик после старта бота
-async def start_scheduler(application):
+# 📅 Планировщик (через post_init)
+async def start_scheduler(app):
     scheduler = AsyncIOScheduler(timezone=timezone("Europe/Vilnius"))
-    scheduler.add_job(send_apod_post, trigger="cron", hour=9, minute=0, args=[application.bot])
+    scheduler.add_job(send_apod_post, "cron", hour=9, minute=0, args=[app.bot])
     scheduler.start()
     logger.info("Планировщик запущен")
 
-# 🚀 Основной запуск
+# 🚀 Старт бота
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(start_scheduler).build()
     app.add_handler(CommandHandler("today", today))
