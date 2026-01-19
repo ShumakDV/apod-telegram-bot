@@ -76,7 +76,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=update.effective_chat.id,
         document=image,
         filename=filename,
-        caption="📎 Изображение в оригинальном качестве"
+        caption="🌃 Изображение в оригинальном качестве"
     )
 
 # ========== АВТОПОСТ В КАНАЛ ==========
