@@ -69,7 +69,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Кнопка под постом
     buttons = [
-        [InlineKeyboardButton("🌐 Открыть на сайте NASA", url=generate_nasa_link())]
+        [InlineKeyboardButton("🌐 View on NASA Website", url=generate_nasa_link())]
     ]
     markup = InlineKeyboardMarkup(buttons)
 
