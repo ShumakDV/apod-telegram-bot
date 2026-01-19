@@ -19,12 +19,59 @@ APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+BASE_URL = "https://apod.nasa.gov/apod/"
+
 # ================== ПАРСИНГ APOD ==================
 
 
 def _clean_text(s: str) -> str:
-    s = re.sub(r"\s+", " ", s or "").strip()
-    return s
+    return re.sub(r"\s+", " ", s or "").strip()
+
+
+def _abs_apod_url(href: str) -> str:
+    href = (href or "").strip()
+    if not href:
+        return ""
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    return BASE_URL + href.lstrip("./")
+
+
+def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
+    """
+    Берём максимально качественную картинку:
+    1) Ссылки <a href="image/...jpg|png"> — чаще всего это оригинал
+    2) Любые <a href="...jpg|png"> (если вдруг не в image/)
+    3) Фоллбек: <img src="...jpg|png"> (часто превью)
+    """
+
+    # 1) Самый частый и лучший вариант: ссылки на /image/
+    candidates = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        low = href.lower()
+        if low.endswith((".jpg", ".jpeg", ".png")):
+            abs_url = _abs_apod_url(href)
+            # приоритет "image/" — чаще это полноразмер
+            score = 0
+            if "/image/" in abs_url.lower() or "image/" in low:
+                score += 10
+            # небольшая эвристика: чем длиннее имя файла, тем чаще это оригинал, а не thumb
+            score += min(len(abs_url), 200) / 200
+            candidates.append((score, abs_url))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    # 2) Фоллбек: <img src=...>
+    img = soup.find("img")
+    if img and img.get("src"):
+        src = img["src"].strip()
+        if src.lower().endswith((".jpg", ".jpeg", ".png")):
+            return _abs_apod_url(src)
+
+    return None
 
 
 def get_apod_data():
@@ -46,37 +93,32 @@ def get_apod_data():
     for center in soup.find_all("center"):
         text = center.get_text(" ", strip=True)
         if "Image Credit" in text:
-            # бывает "Image Credit & Copyright:"
-            credit = text.split("Image Credit")[-1]
-            credit = credit.replace(":", "").strip()
-            credit = _clean_text(credit)
-            if credit:
+            credit_raw = text.split("Image Credit")[-1]
+            credit_raw = credit_raw.replace(":", "").strip()
+            credit_raw = _clean_text(credit_raw)
+            if credit_raw:
+                credit = credit_raw
                 break
-            credit = "NASA"
 
-    # ---------- Explanation (берём 3-4 предложения) ----------
+    # ---------- Explanation (3–4 предложения) ----------
     explanation_text = ""
     expl_b = soup.find("b", string=re.compile(r"^\s*Explanation:\s*$"))
     if expl_b:
         parts = []
         for sib in expl_b.next_siblings:
-            # стоп, когда пошёл следующий жирный заголовок
             if getattr(sib, "name", None) == "b":
                 break
-
             if isinstance(sib, str):
                 cleaned = sib.strip()
                 if cleaned:
                     parts.append(cleaned)
             else:
-                # иногда это <p>, <br> и т.п.
                 txt = sib.get_text(" ", strip=True) if hasattr(sib, "get_text") else ""
                 if txt:
                     parts.append(txt)
 
         explanation_text = _clean_text(" ".join(parts))
 
-    # 3–4 предложения
     short_explanation = ""
     if explanation_text:
         sentences = re.split(r"(?<=\.)\s+", explanation_text)
@@ -84,27 +126,12 @@ def get_apod_data():
         if short_explanation and not short_explanation.endswith("."):
             short_explanation += "."
 
-    # ---------- Оригинальная картинка ----------
-    image_url = None
-
-    # часто самый надёжный путь — <img src="image/...jpg">
-    img = soup.find("img")
-    if img and img.get("src"):
-        src = img["src"].strip()
-        if src.lower().endswith((".jpg", ".jpeg", ".png")):
-            image_url = "https://apod.nasa.gov/apod/" + src.lstrip("./")
-
-    # запасной вариант — ссылка <a href="image/...jpg">
-    if not image_url:
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            if href.lower().endswith((".jpg", ".jpeg", ".png")):
-                image_url = "https://apod.nasa.gov/apod/" + href.lstrip("./")
-                break
+    # ---------- Картинка (берём лучшую) ----------
+    image_url = _pick_best_image_url(soup)
 
     # ---------- Ссылка на страницу ----------
     today = datetime.now(timezone.utc)
-    page_url = f"https://apod.nasa.gov/apod/ap{today.strftime('%y%m%d')}.html"
+    page_url = f"{BASE_URL}ap{today.strftime('%y%m%d')}.html"
 
     return {
         "title": title,
@@ -121,7 +148,6 @@ def get_apod_data():
 def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
 
-    # Markdown часто ломается на символах _, (), [], поэтому используем HTML-режим
     title = data.get("title") or "Astronomy Picture of the Day"
     credit = data.get("credit") or "NASA"
     expl = data.get("short_explanation") or "Описание сегодня недоступно на странице APOD."
@@ -151,8 +177,7 @@ async def send_apod(chat_id: str, bot):
         [[InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]]
     )
 
-    # Если сегодня не картинка (бывает видео), фото не отправим — иначе будет ошибка.
-    # Но ты просил ОДНО сообщение с фото+текстом — значит, в такой день отправим просто сообщение со ссылкой.
+    # Если сегодня не картинка (бывает видео) — отправим сообщение без фото
     if not data["image_url"]:
         await bot.send_message(
             chat_id=chat_id,
