@@ -94,7 +94,7 @@ def scheduled_post(application):
     caption += text[:1024 - len(caption)]
 
     buttons = [
-        [InlineKeyboardButton("🌐 Открыть на сайте NASA", url=generate_nasa_link())]
+        [InlineKeyboardButton("🌐 View on NASA Website", url=generate_nasa_link())]
     ]
     markup = InlineKeyboardMarkup(buttons)
 
