@@ -135,6 +135,15 @@ async def main():
     logger.info("✅ Бот запущен. Ожидает команды или автоматическую отправку.")
     await app.run_polling()
 
+# Совместимость с Railway (если event loop уже запущен)
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        if "already running" in str(e):
+            loop = asyncio.get_event_loop()
+            loop.create_task(main())
+            loop.run_forever()
+        else:
+            raise
