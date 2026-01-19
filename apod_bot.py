@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+import os
 
 from telegram import Update
 from telegram.ext import (
@@ -14,8 +15,8 @@ from pytz import timezone
 import logging
 
 # ========== НАСТРОЙКИ ==========
-TELEGRAM_TOKEN = "8566725896:AAEdatfK7HaBsQ9WSTNCRSYaWIuKumrb8X4"
-CHANNEL_ID = "@AstronomyPictureofDay"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@AstronomyPictureofDay")
 NASA_APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
 
 # ========== ЛОГИ ==========
@@ -63,10 +64,19 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
     caption += text[:1024 - len(caption)]
 
+    # 1. Отправляем фото с подписью
     await context.bot.send_photo(
         chat_id=update.effective_chat.id,
         photo=image,
         caption=caption
+    )
+
+    # 2. Отправляем оригинал без сжатия
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=image,
+        filename=f"apod_{today_str.replace(' ', '_')}.jpg",
+        caption="📎 Изображение в оригинальном качестве"
     )
 
 # ========== АВТОПОСТ В КАНАЛ ==========
@@ -81,10 +91,19 @@ def scheduled_post(application):
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
     caption += text[:1024 - len(caption)]
 
+    # 1. Отправляем как фото с описанием
     application.bot.send_photo(
         chat_id=CHANNEL_ID,
         photo=image,
         caption=caption
+    )
+
+    # 2. Отправляем то же изображение как файл
+    application.bot.send_document(
+        chat_id=CHANNEL_ID,
+        document=image,
+        filename=f"apod_{today_str.replace(' ', '_')}.jpg",
+        caption="📎 Изображение в оригинальном качестве"
     )
 
 # ========== ЗАПУСК ==========
@@ -103,7 +122,7 @@ def main():
     )
     scheduler.start()
 
-    print("✅ Бот запущен. Команда /today доступна. Автопост в 6:00.")
+    print("✅ Бот запущен. Команда /today работает. Автопост в 6:00.")
     application.run_polling()
 
 if __name__ == "__main__":
