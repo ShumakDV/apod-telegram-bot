@@ -13,21 +13,21 @@ from telegram.ext import (
 )
 from pytz import timezone
 
-# ================= НАСТРОЙКИ =================
+# === НАСТРОЙКИ ===
 NASA_URL = "https://apod.nasa.gov/apod/astropix.html"
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@AstronomyPictureofDay")
 
-# ================= ЛОГИ =================
+# === ЛОГИРОВАНИЕ ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================= MARKDOWN V2 =================
+# === ЭКРАНИРОВАНИЕ MARKDOWN ===
 def escape_md(text: str) -> str:
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
-# ================= PARSE APOD =================
+# === ПАРСИНГ APOD ===
 def fetch_apod_data():
     response = requests.get(NASA_URL)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -45,7 +45,7 @@ def fetch_apod_data():
 
     return title, credit, explanation, image_url
 
-# ================= SEND POST =================
+# === ОТПРАВКА В КАНАЛ ===
 async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
     title, credit, explanation, image_url = fetch_apod_data()
 
@@ -53,14 +53,12 @@ async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
     credit_md = escape_md(credit)
     explanation_md = escape_md(explanation)
 
-    # 🔹 КОРОТКИЙ CAPTION (БЕЗ ОШИБОК)
     caption = f"*{title_md}*\n{credit_md}"
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 View on NASA Website", url=NASA_URL)]
     ])
 
-    # 1️⃣ Фото
     await context.bot.send_photo(
         chat_id=CHANNEL_ID,
         photo=image_url,
@@ -69,21 +67,48 @@ async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-    # 2️⃣ Полный текст ОТДЕЛЬНО
     await context.bot.send_message(
         chat_id=CHANNEL_ID,
         text=explanation_md,
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-# ================= COMMANDS =================
-async def today(update, context):
-    await send_apod_post(context)
+# === ОТПРАВКА В ЛС ПРИ /today ===
+async def send_apod_preview(update, context):
+    title, credit, explanation, image_url = fetch_apod_data()
 
+    title_md = escape_md(title)
+    credit_md = escape_md(credit)
+    explanation_md = escape_md(explanation)
+
+    caption = f"*{title_md}*\n{credit_md}"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 View on NASA Website", url=NASA_URL)]
+    ])
+
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id,
+        photo=image_url,
+        caption=caption,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=keyboard
+    )
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=explanation_md,
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+# === КОМАНДЫ ===
 async def start(update, context):
-    await update.message.reply_text("Bot is running. Use /today.")
+    await update.message.reply_text("Bot is running. Use /today to get preview. Auto posts at 09:00 to channel.")
 
-# ================= MAIN =================
+async def today(update, context):
+    await send_apod_preview(update, context)
+
+# === ЗАПУСК ===
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
@@ -95,7 +120,7 @@ def main():
         time=datetime.time(hour=9, minute=0, tzinfo=timezone("Europe/Vilnius"))
     )
 
-    logger.info("Bot started. Auto post at 09:00 Vilnius time.")
+    logger.info("Бот запущен. Автопост в канал в 09:00 (Europe/Vilnius).")
     app.run_polling()
 
 if __name__ == "__main__":
