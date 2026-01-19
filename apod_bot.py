@@ -1,120 +1,122 @@
-
 import os
+import logging
+import asyncio
 import requests
-from datetime import datetime
 from bs4 import BeautifulSoup
+from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from pytz import timezone
-import logging
+from apscheduler.triggers.cron import CronTrigger
+from zoneinfo import ZoneInfo
 
-# 📋 Логгирование
+# Включаем логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔐 Переменные окружения
+# Получаем токен и ID канала из переменных окружения
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # Только для автопостинга
 
-# 📥 Получаем данные APOD
-def fetch_apod_data():
-    response = requests.get(APOD_URL)
+# Функция парсинга страницы APOD
+def get_apod_data():
+    url = "https://apod.nasa.gov/apod/astropix.html"
+    response = requests.get(url)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
 
-    title = soup.find_all("b")[0].get_text(strip=True)
-    credit_tag = soup.find("b", string="Image Credit")
-    credit = credit_tag.next_sibling.strip(": ").strip() if credit_tag else "NASA"
+    # Заголовок изображения
+    title = soup.find_all("b")[0].text.strip()
 
-    explanation = ""
-    explanation_start = soup.find("b", string="Explanation:")
-    if explanation_start:
-        for tag in explanation_start.parent.find_next_siblings("p"):
-            explanation += tag.get_text(" ", strip=True) + "\n\n"
-            if len(explanation) > 1500:
-                break
-
-    image_url = ""
-    for a_tag in soup.find_all("a", href=True):
-        href = a_tag['href']
-        if href.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-            image_url = f"https://apod.nasa.gov/apod/{href}"
+    # Автор изображения
+    credit = "NASA"
+    center_tags = soup.find_all("center")
+    for tag in center_tags:
+        if "Image Credit" in tag.text:
+            if ":" in tag.text:
+                credit = tag.text.split("Image Credit:")[-1].strip()
             break
+
+    # Поиск первого текстового блока после Explanation:
+    explanation_block = soup.find("b", string="Explanation:")
+    explanation = ""
+    if explanation_block:
+        # Собираем все строки текста после тега Explanation
+        explanation_lines = []
+        for sibling in explanation_block.next_siblings:
+            if sibling.name == "b":
+                break
+            if isinstance(sibling, str):
+                explanation_lines.append(sibling.strip())
+        explanation = "\n".join(line for line in explanation_lines if line)
+
+    # Ссылка на изображение
+    image_tag = soup.find("a", href=True)
+    image_url = f"https://apod.nasa.gov/apod/{image_tag['href']}" if image_tag else None
+
+    # Ссылка на страницу с постом
+    today = datetime.utcnow()
+    post_url = f"https://apod.nasa.gov/apod/ap{today.strftime('%y%m%d')}.html"
 
     return {
         "title": title,
         "credit": credit,
-        "explanation": explanation.strip(),
-        "image_url": image_url
+        "explanation": explanation,
+        "image_url": image_url,
+        "page_url": post_url
     }
 
-# 🧠 Проверка доступности картинки
-def is_valid_image(url):
-    try:
-        head = requests.head(url, timeout=10)
-        content_type = head.headers.get("Content-Type", "")
-        return content_type.startswith("image")
-    except Exception as e:
-        logger.error(f"Ошибка при проверке изображения: {e}")
-        return False
-
-# 📤 Отправка поста (в канал или ЛС)
+# Функция отправки поста
 async def send_apod_post(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     try:
-        apod = fetch_apod_data()
-
-        if not apod["image_url"] or not is_valid_image(apod["image_url"]):
-            logger.error("Недопустимый формат изображения или ссылка недоступна.")
-            return
-
-        date_str = datetime.now().strftime("%d %B %Y")
+        data = get_apod_data()
         caption = (
-            f"<b>Astronomy Picture of the Day – {date_str}</b>\n\n"
-            f"<b>{apod['title']}</b>\n"
-            f"<i>Image Credit: {apod['credit']}</i>\n\n"
-            f"{apod['explanation']}"
+            f"*Astronomy Picture of the Day – {datetime.utcnow().strftime('%d %B %Y')}*\n\n"
+            f"*{data['title']}*\n"
+            f"_Image Credit: {data['credit']}_\n\n"
+            f"{data['explanation']}"
         )
 
-        if len(caption) > 1024:
-            caption = caption[:1020] + "..."
-
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 View on NASA Website", url=APOD_URL)]
+        # Кнопка "Открыть на сайте NASA"
+        button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]
         ])
 
-        target_chat = chat_id or CHANNEL_ID
+        # Определяем куда слать: в канал (если автопост) или в личку (если /today)
+        destination = chat_id or CHANNEL_ID
 
         await context.bot.send_photo(
-            chat_id=target_chat,
-            photo=apod["image_url"],
+            chat_id=destination,
+            photo=data["image_url"],
             caption=caption,
-            parse_mode="HTML",
-            reply_markup=buttons
+            reply_markup=button,
+            parse_mode="Markdown"
         )
-        logger.info(f"Пост отправлен в {target_chat}")
-
+        logger.info(f"Пост успешно отправлен в {destination}")
     except Exception as e:
         logger.error(f"Ошибка при отправке поста: {e}")
 
-# 🔘 Команда /today отправляет пост в ЛС
+# Обработка команды /today — в личные сообщения
 async def today(update, context):
     await send_apod_post(context, chat_id=update.effective_chat.id)
 
-# 📅 Планировщик
-async def start_scheduler(app):
-    scheduler = AsyncIOScheduler(timezone=timezone("Europe/Vilnius"))
-    scheduler.add_job(send_apod_post, "cron", hour=9, minute=0, args=[app.bot])
+# Основной запуск бота
+async def main():
+    # Создание экземпляра приложения
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Планировщик для автоматической отправки каждый день в 09:00 (по Вильнюсу)
+    scheduler = AsyncIOScheduler(timezone=ZoneInfo("Europe/Vilnius"))
+    scheduler.add_job(send_apod_post, CronTrigger(hour=9, minute=0), args=[app.bot])
     scheduler.start()
     logger.info("Планировщик запущен")
 
-# 🚀 Запуск бота
-def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(start_scheduler).build()
+    # Обработчик команды /today
     app.add_handler(CommandHandler("today", today))
-    logger.info("Бот запущен. Автопост в 09:00 (Europe/Vilnius).")
-    app.run_polling()
 
+    logger.info("Бот запущен. Ожидает команды или автоматическую отправку.")
+    await app.run_polling()
+
+# Запуск скрипта
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
