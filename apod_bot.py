@@ -1,6 +1,7 @@
 import os
 import logging
 import re
+from io import BytesIO
 from datetime import datetime, timezone, time as dtime
 
 import requests
@@ -40,31 +41,27 @@ def _abs_apod_url(href: str) -> str:
 def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
     """
     Берём максимально качественную картинку:
-    1) Ссылки <a href="image/...jpg|png"> — чаще всего это оригинал
-    2) Любые <a href="...jpg|png"> (если вдруг не в image/)
-    3) Фоллбек: <img src="...jpg|png"> (часто превью)
+    1) ссылки <a href="image/...jpg|png"> — чаще всего оригинал
+    2) любые <a href="...jpg|png">
+    3) фоллбек: <img src="...jpg|png"> (часто превью)
     """
+    candidates: list[tuple[float, str]] = []
 
-    # 1) Самый частый и лучший вариант: ссылки на /image/
-    candidates = []
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         low = href.lower()
         if low.endswith((".jpg", ".jpeg", ".png")):
             abs_url = _abs_apod_url(href)
-            # приоритет "image/" — чаще это полноразмер
-            score = 0
+            score = 0.0
             if "/image/" in abs_url.lower() or "image/" in low:
-                score += 10
-            # небольшая эвристика: чем длиннее имя файла, тем чаще это оригинал, а не thumb
-            score += min(len(abs_url), 200) / 200
+                score += 10.0
+            score += min(len(abs_url), 200) / 200.0
             candidates.append((score, abs_url))
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-    # 2) Фоллбек: <img src=...>
     img = soup.find("img")
     if img and img.get("src"):
         src = img["src"].strip()
@@ -126,7 +123,7 @@ def get_apod_data():
         if short_explanation and not short_explanation.endswith("."):
             short_explanation += "."
 
-    # ---------- Картинка (берём лучшую) ----------
+    # ---------- Картинка ----------
     image_url = _pick_best_image_url(soup)
 
     # ---------- Ссылка на страницу ----------
@@ -142,7 +139,7 @@ def get_apod_data():
     }
 
 
-# ================== СБОРКА ПОДПИСИ (ОДНО СООБЩЕНИЕ) ==================
+# ================== СБОРКА ПОДПИСИ ==================
 
 
 def build_caption(data):
@@ -166,6 +163,30 @@ def build_caption(data):
     return caption
 
 
+# ================== ДОКУМЕНТ (ОРИГИНАЛ БЕЗ СЖАТИЯ) ==================
+
+
+def fetch_image_as_file(image_url: str) -> BytesIO:
+    """
+    Скачивает изображение и возвращает BytesIO, который можно отправить как документ.
+    Важно: BytesIO должен иметь имя (filename), чтобы Telegram корректно понял формат.
+    """
+    r = requests.get(image_url, timeout=30)
+    r.raise_for_status()
+
+    content_type = (r.headers.get("Content-Type") or "").lower()
+    ext = ".jpg"
+    if "png" in content_type:
+        ext = ".png"
+    elif "jpeg" in content_type or "jpg" in content_type:
+        ext = ".jpg"
+
+    bio = BytesIO(r.content)
+    bio.name = f"apod_original{ext}"  # telegram использует name как filename
+    bio.seek(0)
+    return bio
+
+
 # ================== ОТПРАВКА ==================
 
 
@@ -177,7 +198,7 @@ async def send_apod(chat_id: str, bot):
         [[InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]]
     )
 
-    # Если сегодня не картинка (бывает видео) — отправим сообщение без фото
+    # Если сегодня не картинка (бывает видео) — отправим просто сообщение
     if not data["image_url"]:
         await bot.send_message(
             chat_id=chat_id,
@@ -187,6 +208,7 @@ async def send_apod(chat_id: str, bot):
         )
         return
 
+    # 1) Пост как раньше: фото + подпись (может быть сжатие Telegram)
     await bot.send_photo(
         chat_id=chat_id,
         photo=data["image_url"],
@@ -194,6 +216,17 @@ async def send_apod(chat_id: str, bot):
         parse_mode="HTML",
         reply_markup=keyboard,
     )
+
+    # 2) Вторым сообщением — оригинал как файл (без сжатия)
+    try:
+        file_obj = fetch_image_as_file(data["image_url"])
+        await bot.send_document(
+            chat_id=chat_id,
+            document=file_obj,
+            caption="📎 Original image (no compression)",
+        )
+    except Exception:
+        logger.exception("Не удалось отправить оригинал как файл")
 
 
 # ================== /today ==================
@@ -225,7 +258,6 @@ def main():
 
     app.add_handler(CommandHandler("today", today))
 
-    # автопост в 09:00 Вильнюс
     vilnius_tz = tz("Europe/Vilnius")
     app.job_queue.run_daily(
         daily_post,
