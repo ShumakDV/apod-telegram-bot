@@ -90,7 +90,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=update.effective_chat.id,
         photo=image,
         caption=caption,
-        reply_markup=markup
+        reply_markup=markup,
         parse_mode="Markdown"
     )
 
@@ -120,7 +120,7 @@ def scheduled_post(application):
         chat_id=CHANNEL_ID,
         photo=image,
         caption=caption,
-        reply_markup=markup
+        reply_markup=markup,
         parse_mode="Markdown"
     )
 
