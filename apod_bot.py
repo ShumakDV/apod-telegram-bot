@@ -91,6 +91,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo=image,
         caption=caption,
         reply_markup=markup
+        parse_mode="Markdown"
     )
 
 
@@ -120,6 +121,7 @@ def scheduled_post(application):
         photo=image,
         caption=caption,
         reply_markup=markup
+        parse_mode="Markdown"
     )
 
 
