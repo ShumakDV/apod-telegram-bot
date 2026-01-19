@@ -14,47 +14,60 @@ from telegram.ext import (
 from apscheduler.schedulers.background import BackgroundScheduler
 from pytz import timezone
 
-# ================= НАСТРОЙКИ =================
+# ========== НАСТРОЙКИ ==========
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@AstronomyPictureofDay")
 NASA_APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
 BASE_URL = "https://apod.nasa.gov/apod/"
 
-# ================= ЛОГИ =================
+# ========== ЛОГИ ==========
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================= APOD =================
+
+# ========== НАДЁЖНЫЙ ПОИСК ОРИГИНАЛА ==========
 def get_apod_data():
     response = requests.get(NASA_APOD_URL)
     response.raise_for_status()
-
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # ---- текст ----
     explanation = soup.find_all("p")[2].get_text()
 
-    # ---- ИЩЕМ ОРИГИНАЛ ----
-    image_url = None
-
+    # Все возможные ссылки на изображения
+    candidate_urls = []
     for a in soup.find_all("a"):
-        img = a.find("img")
-        if img and a.get("href", "").lower().endswith((".jpg", ".jpeg", ".png", ".tiff")):
-            image_url = BASE_URL + a["href"]
-            break
+        href = a.get("href", "")
+        if href.lower().endswith((".jpg", ".jpeg", ".png", ".tiff")):
+            full_url = BASE_URL + href
+            candidate_urls.append(full_url)
 
-    if not image_url:
+    if not candidate_urls:
         return None, explanation, None
 
-    logger.info(f"Original image found: {image_url}")
+    # Выбираем самую "тяжёлую" ссылку
+    max_size = -1
+    best_url = None
+    for url in candidate_urls:
+        try:
+            head = requests.head(url)
+            size = int(head.headers.get("Content-Length", 0))
+            logger.info(f"Checked {url} – {size/1024:.1f} KB")
+            if size > max_size:
+                max_size = size
+                best_url = url
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке {url}: {e}")
 
-    image_data = requests.get(image_url).content
-    filename = image_url.split("/")[-1]
+    if best_url:
+        image_data = requests.get(best_url).content
+        filename = best_url.split("/")[-1]
+        logger.info(f"Выбран оригинал: {best_url} ({max_size/1024:.1f} KB)")
+        return image_data, explanation, filename
 
-    return image_data, explanation, filename
+    return None, explanation, None
 
 
-# ================= /today =================
+# ========== /today ==========
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📡 Загружаю Astronomy Picture of the Day…")
 
@@ -69,14 +82,14 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
     caption += text[:1024 - len(caption)]
 
-    # Фото (Telegram-сжатие — ок)
+    # 1. Фото (Telegram может сжать)
     await context.bot.send_photo(
         chat_id=update.effective_chat.id,
         photo=image,
         caption=caption
     )
 
-    # ОРИГИНАЛ БЕЗ СЖАТИЯ
+    # 2. Оригинал (без сжатия)
     await context.bot.send_document(
         chat_id=update.effective_chat.id,
         document=image,
@@ -85,7 +98,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ================= АВТОПОСТ =================
+# ========== АВТОПОСТ ==========
 def scheduled_post(application):
     image, text, filename = get_apod_data()
     if not image:
@@ -111,10 +124,9 @@ def scheduled_post(application):
     )
 
 
-# ================= ЗАПУСК =================
+# ========== ЗАПУСК ==========
 def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
     application.add_handler(CommandHandler("today", today))
 
     scheduler = BackgroundScheduler(timezone=timezone("Europe/Vilnius"))
@@ -127,7 +139,7 @@ def main():
     )
     scheduler.start()
 
-    print("✅ APOD бот запущен. Оригиналы скачиваются корректно.")
+    print("✅ Бот запущен. Оригинал изображения теперь действительно оригинальный.")
     application.run_polling()
 
 
