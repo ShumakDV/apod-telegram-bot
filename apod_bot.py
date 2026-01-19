@@ -31,8 +31,18 @@ def get_apod_data():
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
 
-    explanation = soup.find_all("p")[2].get_text()
+    # Заголовок и автор
+    try:
+        title = soup.find_all("b")[0].text.strip()
+        credit = soup.find_all("b")[1].next_sibling.strip().replace(":", "").replace("\n", "")
+    except Exception:
+        title = ""
+        credit = ""
 
+    # Текст объяснения
+    explanation = soup.find_all("p")[2].get_text().strip()
+
+    # Картинка
     img_tag = soup.find("img")
     image_url = None
 
@@ -42,10 +52,10 @@ def get_apod_data():
     image_data = requests.get(image_url).content if image_url else None
     filename = image_url.split("/")[-1] if image_url else None
 
-    return image_data, explanation, filename
+    return image_data, title, credit, explanation, filename
 
 
-# ========== ССЫЛКА НА СЕГОДНЯШНИЙ ПОСТ ==========
+# ========== ССЫЛКА НА СЕГОДНЯ ==========
 def generate_nasa_link():
     today = datetime.utcnow()
     short_date = today.strftime("%y%m%d")  # например: 260119
@@ -54,20 +64,23 @@ def generate_nasa_link():
 
 # ========== /today ==========
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📡 Загружаю Astronomy Picture of the Day…")
+    await update.message.reply_text("📡 Fetching Astronomy Picture of the Day…")
 
-    image, text, filename = get_apod_data()
+    image, title, credit, text, filename = get_apod_data()
     if not image:
-        await update.message.reply_text("Сегодня изображение недоступно.")
+        await update.message.reply_text("Image is not available today.")
         return
 
     tz = timezone("Europe/Vilnius")
     today_str = datetime.now(tz).strftime("%d %B %Y")
 
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
+    if title:
+        caption += f"**{title}**\n"
+    if credit:
+        caption += f"*Image Credit: {credit}*\n\n"
     caption += text[:1024 - len(caption)]
 
-    # Кнопка под постом
     buttons = [
         [InlineKeyboardButton("🌐 View on NASA Website", url=generate_nasa_link())]
     ]
@@ -83,7 +96,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== АВТОПОСТ ==========
 def scheduled_post(application):
-    image, text, filename = get_apod_data()
+    image, title, credit, text, filename = get_apod_data()
     if not image:
         return
 
@@ -91,6 +104,10 @@ def scheduled_post(application):
     today_str = datetime.now(tz).strftime("%d %B %Y")
 
     caption = f"🗓 Astronomy Picture of the Day – {today_str}\n\n"
+    if title:
+        caption += f"**{title}**\n"
+    if credit:
+        caption += f"*Image Credit: {credit}*\n\n"
     caption += text[:1024 - len(caption)]
 
     buttons = [
@@ -115,13 +132,13 @@ def main():
     scheduler.add_job(
         scheduled_post,
         "cron",
-        hour=6,
+        hour=9,
         minute=0,
         args=[application],
     )
     scheduler.start()
 
-    print("✅ Бот запущен. Постит в 6:00 и добавляет кнопку с ссылкой на сайт NASA.")
+    print("✅ Bot is running. Posting at 09:00 with formatted header and inline button.")
     application.run_polling()
 
 
