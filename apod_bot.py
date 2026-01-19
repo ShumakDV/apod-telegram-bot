@@ -2,6 +2,7 @@ import logging
 import re
 import datetime
 import requests
+import os
 from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -15,19 +16,19 @@ from pytz import timezone
 
 # === НАСТРОЙКИ ===
 NASA_URL = "https://apod.nasa.gov/apod/astropix.html"
-TELEGRAM_TOKEN = "8566725896:AAEdatfK7HaBsQ9WSTNCRSYaWIuKumrb8X4"
-CHANNEL_ID = "@AstronomyPictureofDay"
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@AstronomyPictureofDay")
 
 # === ЛОГГИРОВАНИЕ ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+# === ЭКРАНИРОВАНИЕ ДЛЯ MARKDOWN V2 ===
 def escape_markdown(text: str) -> str:
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
+# === ПАРСИНГ САЙТА NASA ===
 def fetch_apod_data():
     response = requests.get(NASA_URL)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -39,16 +40,14 @@ def fetch_apod_data():
     explanation = explanation_tag.text.strip()
 
     image_tag = soup.find("a", href=True)
+    high_res_url = None
     if image_tag and (".jpg" in image_tag['href'] or ".png" in image_tag['href']):
         high_res_url = "https://apod.nasa.gov/apod/" + image_tag["href"]
-    else:
-        high_res_url = None
 
     image_element = soup.find("img")
+    preview_url = None
     if image_element:
         preview_url = "https://apod.nasa.gov/apod/" + image_element["src"]
-    else:
-        preview_url = None
 
     credit = ""
     credit_match = soup.find_all("b")
@@ -60,21 +59,21 @@ def fetch_apod_data():
 
     return headline, explanation, preview_url, high_res_url, credit
 
-
-# === ОТПРАВКА ПОСТА ===
+# === ОТПРАВКА ПОСТА В КАНАЛ ===
 async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
     headline, explanation, preview_url, _, credit = fetch_apod_data()
 
     today = datetime.datetime.now(timezone("Europe/Vilnius")).strftime("%d %B %Y")
-    post_title = f"Astronomy Picture of the Day – {today}"
 
-    # Экранируем markdown
-    escaped_title = escape_markdown(post_title)
     escaped_headline = escape_markdown(headline)
     escaped_credit = escape_markdown(credit)
     escaped_explanation = escape_markdown(explanation)
 
-    caption = f"*{escaped_headline}*\n{escaped_credit}\n\n{escaped_explanation}"
+    caption = (
+        f"*{escaped_headline}*\n"
+        f"{escaped_credit}\n\n"
+        f"{escaped_explanation}"
+    )
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 View on NASA Website", url=NASA_URL)]
@@ -96,14 +95,12 @@ async def send_apod_post(context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2,
         )
 
-
 # === КОМАНДЫ ===
 async def start(update, context):
     await update.message.reply_text("Bot is running. Use /today to post. Auto posts at 09:00 (Vilnius).")
 
 async def today(update, context):
     await send_apod_post(context)
-
 
 # === ЗАПУСК ===
 def main():
@@ -120,7 +117,7 @@ def main():
         time=datetime.time(hour=9, minute=0, tzinfo=timezone("Europe/Vilnius"))
     )
 
-    logger.info("Бот запущен. Автопост в 09:00 по Вильнюсу.")
+    logger.info("Бот запущен. Автопост в 09:00 (Europe/Vilnius).")
     app.run_polling()
 
 
