@@ -6,6 +6,7 @@ from datetime import datetime, timezone, time as dtime
 import requests
 from bs4 import BeautifulSoup
 from pytz import timezone as tz
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -15,11 +16,12 @@ BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 APOD_URL = "https://apod.nasa.gov/apod/astropix.html"
+BASE_URL = "https://apod.nasa.gov/apod/"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://apod.nasa.gov/apod/"
+
 
 # ================== ПАРСИНГ APOD ==================
 
@@ -35,6 +37,20 @@ def _abs_apod_url(href: str) -> str:
     if href.startswith("http://") or href.startswith("https://"):
         return href
     return BASE_URL + href.lstrip("./")
+
+
+def is_valid_image_url(url: str) -> bool:
+    """
+    Telegram принимает ТОЛЬКО реальные image/*
+    APOD иногда отдаёт HTML/redirect под видом .jpg
+    """
+    try:
+        r = requests.head(url, timeout=10, allow_redirects=True)
+        content_type = r.headers.get("Content-Type", "").lower()
+        return content_type.startswith("image/")
+    except Exception as e:
+        logger.warning(f"HEAD check failed for {url}: {e}")
+        return False
 
 
 def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
@@ -73,6 +89,7 @@ def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
 
     return None
 
+# ================== ПАРСИНГ APOD ==================
 
 def get_apod_data():
     response = requests.get(APOD_URL, timeout=15)
@@ -93,12 +110,12 @@ def get_apod_data():
     for center in soup.find_all("center"):
         text = center.get_text(" ", strip=True)
         if "Image Credit" in text:
-            credit_raw = text.split("Image Credit")[-1]
-            credit_raw = credit_raw.replace(":", "").strip()
-            credit_raw = _clean_text(credit_raw)
-            if credit_raw:
-                credit = credit_raw
-                break
+            raw = text.split("Image Credit")[-1]
+            raw = raw.replace(":", "")
+            raw = _clean_text(raw)
+            if raw:
+                credit = raw
+            break
 
     # ---------- Explanation (3–4 предложения) ----------
     explanation_text = ""
@@ -109,11 +126,10 @@ def get_apod_data():
             if getattr(sib, "name", None) == "b":
                 break
             if isinstance(sib, str):
-                cleaned = sib.strip()
-                if cleaned:
-                    parts.append(cleaned)
+                if sib.strip():
+                    parts.append(sib.strip())
             else:
-                txt = sib.get_text(" ", strip=True) if hasattr(sib, "get_text") else ""
+                txt = sib.get_text(" ", strip=True)
                 if txt:
                     parts.append(txt)
 
@@ -177,8 +193,10 @@ async def send_apod(chat_id: str, bot):
         [[InlineKeyboardButton("🌐 View on NASA Website", url=data["page_url"])]]
     )
 
-    # Если сегодня не картинка (бывает видео) — отправим сообщение без фото
-    if not data["image_url"]:
+    image_url = data.get("image_url")
+
+    # Нет картинки
+    if not image_url:
         await bot.send_message(
             chat_id=chat_id,
             text=f"Сегодня на APOD не картинка 😅\n{data['page_url']}",
@@ -187,35 +205,42 @@ async def send_apod(chat_id: str, bot):
         )
         return
 
+    # Есть ссылка, но Telegram её не примет
+    if not is_valid_image_url(image_url):
+        logger.warning(f"Invalid APOD image (not image/*): {image_url}")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"Сегодняшний APOD опубликован в нестандартном формате.\n{data['page_url']}",
+            reply_markup=keyboard,
+            disable_web_page_preview=False,
+        )
+        return
+
+    # Всё ок
     await bot.send_photo(
         chat_id=chat_id,
-        photo=data["image_url"],
+        photo=image_url,
         caption=caption,
         parse_mode="HTML",
         reply_markup=keyboard,
     )
 
-
 # ================== /today ==================
-
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_apod(update.effective_chat.id, context.bot)
 
-
 # ================== АВТОПОСТ ==================
-
 
 async def daily_post(context: ContextTypes.DEFAULT_TYPE):
     if not CHANNEL_ID:
         logger.error("CHANNEL_ID is not set")
         return
+
     await send_apod(CHANNEL_ID, context.bot)
     logger.info("✅ Автопост отправлен в канал")
 
-
 # ================== ЗАПУСК ==================
-
 
 def main():
     if not BOT_TOKEN:
@@ -225,7 +250,6 @@ def main():
 
     app.add_handler(CommandHandler("today", today))
 
-    # автопост в 09:00 Вильнюс
     vilnius_tz = tz("Europe/Vilnius")
     app.job_queue.run_daily(
         daily_post,
