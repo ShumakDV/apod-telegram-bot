@@ -2,12 +2,13 @@ import os
 import logging
 import re
 from datetime import datetime, timezone, time as dtime
+from io import BytesIO
 
 import requests
 from bs4 import BeautifulSoup
 from pytz import timezone as tz
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ================== НАСТРОЙКИ ==================
@@ -36,26 +37,7 @@ def _abs_apod_url(href: str) -> str:
     return BASE_URL + href.lstrip("./")
 
 
-def is_valid_image_url(url: str) -> bool:
-    """
-    Telegram принимает ТОЛЬКО реальные image/*
-    APOD иногда отдаёт HTML/redirect под видом .jpg
-    """
-    try:
-        r = requests.head(url, timeout=10, allow_redirects=True)
-        content_type = r.headers.get("Content-Type", "").lower()
-        return content_type.startswith("image/")
-    except Exception as e:
-        logger.warning(f"HEAD check failed for {url}: {e}")
-        return False
-
-
 def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
-    """
-    1) <a href="image/...jpg|png"> — чаще оригинал
-    2) любые <a href="...jpg|png">
-    3) fallback <img src="...">
-    """
     candidates = []
 
     for a in soup.find_all("a", href=True):
@@ -64,7 +46,7 @@ def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
         if low.endswith((".jpg", ".jpeg", ".png")):
             abs_url = _abs_apod_url(href)
             score = 0
-            if "/image/" in abs_url.lower():
+            if "/image/" in abs_url.lower() or "image/" in low:
                 score += 10
             score += min(len(abs_url), 200) / 200
             candidates.append((score, abs_url))
@@ -80,6 +62,31 @@ def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
             return _abs_apod_url(src)
 
     return None
+
+
+def download_image(url: str) -> BytesIO | None:
+    """
+    СТАБИЛЬНО:
+    - скачиваем файл сами
+    - проверяем Content-Type
+    - Telegram получает готовый image/*
+    """
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+
+        content_type = r.headers.get("Content-Type", "").lower()
+        if not content_type.startswith("image/"):
+            logger.error(f"APOD returned non-image content: {content_type}")
+            return None
+
+        bio = BytesIO(r.content)
+        bio.name = url.split("/")[-1] or "apod.jpg"
+        bio.seek(0)
+        return bio
+    except Exception as e:
+        logger.error(f"Failed to download APOD image: {e}")
+        return None
 
 # ================== ПАРСИНГ APOD ==================
 
@@ -121,7 +128,7 @@ def get_apod_data():
                 if sib.strip():
                     parts.append(sib.strip())
             else:
-                txt = sib.get_text(" ", strip=True)
+                txt = sib.get_text(" ", strip=True) if hasattr(sib, "get_text") else ""
                 if txt:
                     parts.append(txt)
 
@@ -154,15 +161,11 @@ def get_apod_data():
 def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
 
-    title = data.get("title") or "Astronomy Picture of the Day"
-    credit = data.get("credit") or "NASA"
-    expl = data.get("short_explanation") or "Описание сегодня недоступно на странице APOD."
-
     caption = (
         f"<b>Astronomy Picture of the Day – {now.strftime('%d %B %Y')}</b>\n\n"
-        f"<b>{title}</b>\n"
-        f"<i>Image Credit: {credit}</i>\n\n"
-        f"{expl}"
+        f"<b>{data.get('title')}</b>\n"
+        f"<i>Image Credit: {data.get('credit')}</i>\n\n"
+        f"{data.get('short_explanation')}"
     )
 
     if len(caption) > 1024:
@@ -188,25 +191,21 @@ async def send_apod(chat_id: str, bot):
             chat_id=chat_id,
             text=f"Сегодня на APOD не картинка 😅\n{data['page_url']}",
             reply_markup=keyboard,
-            disable_web_page_preview=False,
         )
         return
 
-    # Есть ссылка, но Telegram её не примет
-    if not is_valid_image_url(image_url):
-        logger.warning(f"Invalid APOD image (not image/*): {image_url}")
+    image_file = download_image(image_url)
+    if not image_file:
         await bot.send_message(
             chat_id=chat_id,
-            text=f"Сегодняшний APOD опубликован в нестандартном формате.\n{data['page_url']}",
+            text=f"Не удалось загрузить изображение.\n{data['page_url']}",
             reply_markup=keyboard,
-            disable_web_page_preview=False,
         )
         return
 
-    # Всё ок
     await bot.send_photo(
         chat_id=chat_id,
-        photo=image_url,
+        photo=InputFile(image_file),
         caption=caption,
         parse_mode="HTML",
         reply_markup=keyboard,
@@ -225,7 +224,7 @@ async def daily_post(context: ContextTypes.DEFAULT_TYPE):
         return
 
     await send_apod(CHANNEL_ID, context.bot)
-    logger.info("✅ Автопост отправлен в канал")
+    logger.info("✅ Автопост отправлен")
 
 # ================== ЗАПУСК ==================
 
@@ -234,19 +233,16 @@ def main():
         raise RuntimeError("TELEGRAM_TOKEN is not set")
 
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("today", today))
 
     vilnius_tz = tz("Europe/Vilnius")
     app.job_queue.run_daily(
         daily_post,
         time=dtime(hour=9, minute=0, tzinfo=vilnius_tz),
-        name="daily_post",
     )
 
-    logger.info("✅ Бот запущен. /today — в личку, автопост — в канал.")
+    logger.info("✅ Бот запущен")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
