@@ -21,10 +21,7 @@ BASE_URL = "https://apod.nasa.gov/apod/"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-
-# ================== ПАРСИНГ APOD ==================
-
+# ================== ВСПОМОГАТЕЛЬНЫЕ ==================
 
 def _clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
@@ -55,24 +52,20 @@ def is_valid_image_url(url: str) -> bool:
 
 def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
     """
-    Берём максимально качественную картинку:
-    1) Ссылки <a href="image/...jpg|png"> — чаще всего это оригинал
-    2) Любые <a href="...jpg|png"> (если вдруг не в image/)
-    3) Фоллбек: <img src="...jpg|png"> (часто превью)
+    1) <a href="image/...jpg|png"> — чаще оригинал
+    2) любые <a href="...jpg|png">
+    3) fallback <img src="...">
     """
-
-    # 1) Самый частый и лучший вариант: ссылки на /image/
     candidates = []
+
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         low = href.lower()
         if low.endswith((".jpg", ".jpeg", ".png")):
             abs_url = _abs_apod_url(href)
-            # приоритет "image/" — чаще это полноразмер
             score = 0
-            if "/image/" in abs_url.lower() or "image/" in low:
+            if "/image/" in abs_url.lower():
                 score += 10
-            # небольшая эвристика: чем длиннее имя файла, тем чаще это оригинал, а не thumb
             score += min(len(abs_url), 200) / 200
             candidates.append((score, abs_url))
 
@@ -80,7 +73,6 @@ def _pick_best_image_url(soup: BeautifulSoup) -> str | None:
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-    # 2) Фоллбек: <img src=...>
     img = soup.find("img")
     if img and img.get("src"):
         src = img["src"].strip()
@@ -142,7 +134,7 @@ def get_apod_data():
         if short_explanation and not short_explanation.endswith("."):
             short_explanation += "."
 
-    # ---------- Картинка (берём лучшую) ----------
+    # ---------- Картинка ----------
     image_url = _pick_best_image_url(soup)
 
     # ---------- Ссылка на страницу ----------
@@ -157,9 +149,7 @@ def get_apod_data():
         "short_explanation": short_explanation,
     }
 
-
-# ================== СБОРКА ПОДПИСИ (ОДНО СООБЩЕНИЕ) ==================
-
+# ================== ПОДПИСЬ ==================
 
 def build_caption(data):
     now = datetime.now(timezone.utc).astimezone(tz("Europe/Vilnius"))
@@ -175,15 +165,12 @@ def build_caption(data):
         f"{expl}"
     )
 
-    # лимит Telegram для caption у фото
     if len(caption) > 1024:
         caption = caption[:1020] + "..."
 
     return caption
 
-
 # ================== ОТПРАВКА ==================
-
 
 async def send_apod(chat_id: str, bot):
     data = get_apod_data()
