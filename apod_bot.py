@@ -7,6 +7,7 @@ from io import BytesIO
 import requests
 from bs4 import BeautifulSoup
 from pytz import timezone as tz
+from PIL import Image
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -70,6 +71,7 @@ def download_image(url: str) -> BytesIO | None:
     - скачиваем файл сами
     - проверяем Content-Type
     - Telegram получает готовый image/*
+    - нормализуем размеры (фикс Photo_invalid_dimensions)
     """
     try:
         r = requests.get(url, timeout=30)
@@ -80,10 +82,33 @@ def download_image(url: str) -> BytesIO | None:
             logger.error(f"APOD returned non-image content: {content_type}")
             return None
 
-        bio = BytesIO(r.content)
-        bio.name = url.split("/")[-1] or "apod.jpg"
-        bio.seek(0)
-        return bio
+        src = BytesIO(r.content)
+        src.seek(0)
+
+        img = Image.open(src)
+        img.load()
+
+        w, h = img.size
+        if w <= 0 or h <= 0:
+            logger.error(f"Invalid image size: {w}x{h}")
+            return None
+
+        MAX_SIDE = 10000
+        if max(w, h) > MAX_SIDE:
+            scale = MAX_SIDE / max(w, h)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        out = BytesIO()
+        out.name = "apod.jpg"
+        img.save(out, format="JPEG", quality=92, optimize=True)
+        out.seek(0)
+        return out
+
     except Exception as e:
         logger.error(f"Failed to download APOD image: {e}")
         return None
