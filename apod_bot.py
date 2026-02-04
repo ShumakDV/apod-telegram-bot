@@ -231,25 +231,25 @@ async def send_apod(chat_id: str, bot):
         return
 
     try:
-    await bot.send_photo(
+        await bot.send_photo(
         chat_id=chat_id,
         photo=InputFile(image_file),
         caption=caption,
         parse_mode="HTML",
         reply_markup=keyboard,
-    )
-except BadRequest as e:
-    if "Photo_invalid_dimensions" in str(e):
-        image_file.seek(0)
-        await bot.send_document(
-            chat_id=chat_id,
-            document=InputFile(image_file),
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=keyboard,
         )
-    else:
-        raise
+    except BadRequest as e:
+        if "Photo_invalid_dimensions" in str(e):
+            image_file.seek(0)
+            await bot.send_document(
+                chat_id=chat_id,
+                document=InputFile(image_file),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        else:
+            raise
 
 
 # ================== /today ==================
