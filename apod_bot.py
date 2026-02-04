@@ -95,7 +95,7 @@ def download_image(url: str) -> BytesIO | None:
             logger.error(f"Invalid image size: {w}x{h}")
             return None
 
-        MAX_SIDE = 10000
+        MAX_SIDE = 4096
         if max(w, h) > MAX_SIDE:
             scale = MAX_SIDE / max(w, h)
             new_w = max(1, int(w * scale))
