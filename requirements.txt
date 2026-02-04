@@ -3,4 +3,4 @@ requests
 beautifulsoup4
 apscheduler
 pytz
-Pillow>=10
+Pillow>=10 
